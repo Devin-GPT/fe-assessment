@@ -120,11 +120,11 @@ const LoadingScreen = ({ connectionProgress }: { connectionProgress: number }) =
 
   useEffect(() => {
     DEVICE_TOPICS.forEach((topic, index) => {
-      const delay = index * 1000;
+      const delay = index * 500; // Reduced delay between devices
       setTimeout(() => {
         setDeviceStatuses(prev => ({
           ...prev,
-          [topic]: Math.min(100, connectionProgress + Math.random() * 20)
+          [topic]: Math.min(100, connectionProgress)
         }));
       }, delay);
     });
@@ -391,6 +391,26 @@ const DEVICE_TIMEOUT = 5000;
 const DeviceTable: React.FC = () => {
   const { devices, isLoading, connectionStatus, lastUpdate, isPaused, togglePause } = useMQTTConnection();
   const [connectionProgress, setConnectionProgress] = useState(0);
+  const [showDashboard, setShowDashboard] = useState(false);
+
+  // Update connection progress based on devices
+  useEffect(() => {
+    if (isLoading) {
+      const connectedDevices = Object.keys(devices).length;
+      const progress = Math.min(100, (connectedDevices / DEVICE_TOPICS.length) * 100);
+      setConnectionProgress(progress);
+      
+      // Show dashboard when all devices are connected
+      if (connectedDevices === DEVICE_TOPICS.length) {
+        const timer = setTimeout(() => {
+          setShowDashboard(true);
+        }, 1000);
+        return () => clearTimeout(timer);
+      }
+    } else {
+      setShowDashboard(true);
+    }
+  }, [devices, isLoading]);
 
   const getDeviceStatus = useCallback((deviceTime?: number) => {
     // First check global status
@@ -517,22 +537,6 @@ const DeviceTable: React.FC = () => {
     }
   ];
 
-  // Keep these effects
-  useEffect(() => {
-    if (isLoading) {
-      const interval = setInterval(() => {
-        setConnectionProgress(prev => {
-          if (prev >= 90) return prev;
-          return prev + 10;
-        });
-      }, 500);
-
-      return () => clearInterval(interval);
-    } else {
-      setConnectionProgress(100);
-    }
-  }, [isLoading]);
-
   // Debug the devices data
   useEffect(() => {
     console.log('Current devices:', devices);
@@ -561,7 +565,7 @@ const DeviceTable: React.FC = () => {
     </Box>
   );
 
-  if (isLoading) {
+  if (isLoading && !showDashboard) {
     return <LoadingScreen connectionProgress={connectionProgress} />;
   }
 

@@ -8,12 +8,13 @@ export const useMQTTConnection = () => {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
   const [isPaused, setIsPaused] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   
   // Use ref to maintain client instance
   const clientRef = useRef<MqttClient | null>(null);
   const pendingUpdatesRef = useRef<Record<string, DeviceData>>({});
   const lastUpdateTimeRef = useRef<number>(0);
-  const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
+  const connectedDevicesRef = useRef<Set<string>>(new Set());
 
   const handleMessage = useCallback((topic: string, message: Buffer) => {
     if (isPaused) return;
@@ -21,6 +22,9 @@ export const useMQTTConnection = () => {
     try {
       const deviceId = topic.split('/')[1];
       const data = JSON.parse(message.toString()) as MQTTMessage;
+      
+      // Track connected device
+      connectedDevicesRef.current.add(deviceId);
       
       // Collect updates
       pendingUpdatesRef.current[deviceId] = {
@@ -57,34 +61,6 @@ export const useMQTTConnection = () => {
     }
   }, [isPaused]);
 
-  // Add heartbeat check
-  const checkConnection = useCallback(async () => {
-    try {
-      const response = await fetch('http://localhost:3000/api/health');
-      if (!response.ok) {
-        setConnectionStatus('error');
-      }
-    } catch (error) {
-      console.error('Backend connection lost:', error);
-      setConnectionStatus('error');
-    }
-  }, []);
-
-  // Start heartbeat when component mounts
-  useEffect(() => {
-    // Check connection immediately
-    checkConnection();
-
-    // Set up periodic checks
-    heartbeatRef.current = setInterval(checkConnection, 5000);
-
-    return () => {
-      if (heartbeatRef.current) {
-        clearInterval(heartbeatRef.current);
-      }
-    };
-  }, [checkConnection]);
-
   // Update MQTT connection effect
   useEffect(() => {
     if (clientRef.current) {
@@ -96,6 +72,7 @@ export const useMQTTConnection = () => {
       ...MQTT_CONFIG.options,
       clean: true,
       reconnectPeriod: 1000,
+      keepalive: 60,
     });
     
     clientRef.current = client;
@@ -103,6 +80,7 @@ export const useMQTTConnection = () => {
     client.on('connect', () => {
       console.log('Connected to MQTT broker');
       setConnectionStatus('connected');
+      setIsConnected(true);
       
       // Subscribe to all device topics
       DEVICE_TOPICS.forEach(topic => {
@@ -110,6 +88,8 @@ export const useMQTTConnection = () => {
         client.subscribe(topic, (err) => {
           if (err) {
             console.error('Subscription error:', err);
+            setConnectionStatus('error');
+            setIsConnected(false);
           } else {
             console.log('Subscribed to:', topic);
           }
@@ -118,20 +98,34 @@ export const useMQTTConnection = () => {
     });
 
     client.on('message', (topic, message) => {
-      if (!isPaused) {  // Only process messages if not paused
+      if (!isPaused) {
         console.log('Message received on topic:', topic);
         handleMessage(topic, message);
+        setIsConnected(true);
+        setConnectionStatus('connected');
       }
     });
 
     client.on('error', (err) => {
       console.error('MQTT client error:', err);
       setConnectionStatus('error');
+      setIsConnected(false);
     });
 
     client.on('close', () => {
       console.log('MQTT connection closed');
       setConnectionStatus('error');
+      setIsConnected(false);
+    });
+
+    client.on('reconnect', () => {
+      console.log('MQTT client reconnecting...');
+      setConnectionStatus('connecting');
+      setIsConnected(true);
+      // Resubscribe to topics
+      DEVICE_TOPICS.forEach(topic => {
+        client.subscribe(topic);
+      });
     });
 
     // Cleanup only when component unmounts
@@ -142,7 +136,24 @@ export const useMQTTConnection = () => {
         clientRef.current = null;
       }
     };
-  }, [isPaused]); // Add isPaused to dependencies
+  }, [isPaused]);
+
+  // Update loading state based on connected devices
+  useEffect(() => {
+    if (connectionStatus === 'connected' && isConnected) {
+      const allDevicesConnected = DEVICE_TOPICS.every(topic => {
+        const deviceId = topic.split('/')[1];
+        return connectedDevicesRef.current.has(deviceId);
+      });
+
+      if (allDevicesConnected) {
+        const timer = setTimeout(() => {
+          setIsLoading(false);
+        }, 2000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [connectionStatus, isConnected, devices]);
 
   const togglePause = useCallback(async (shouldPause: boolean) => {
     try {
@@ -165,16 +176,6 @@ export const useMQTTConnection = () => {
       console.error('Error toggling publish state:', error);
     }
   }, []);
-
-  // Set loading to false after a short delay when connected
-  useEffect(() => {
-    if (connectionStatus === 'connected') {
-      const timer = setTimeout(() => {
-        setIsLoading(false);
-      }, 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [connectionStatus]);
 
   return {
     devices,
